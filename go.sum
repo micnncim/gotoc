@@ -1,0 +1,4 @@
+github.com/dsymonds/gotoc v0.0.0-20160928043926-5aebcfc91819 h1:9778zj477h/VauD8kHbOtbytW2KGQefJ/wUGE5w+mzw=
+github.com/dsymonds/gotoc v0.0.0-20160928043926-5aebcfc91819/go.mod h1:MvzMVHq8BH2Ji/o8TGDocVA70byvLrAgFTxkEnmjO4Y=
+github.com/golang/protobuf v1.3.2 h1:6nsPYzhq5kReh6QImI3k5qWzO4PEbvbIW2cwSfR/6xs=
+github.com/golang/protobuf v1.3.2/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
