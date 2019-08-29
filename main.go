@@ -18,8 +18,8 @@ import (
 	"github.com/golang/protobuf/proto"
 	plugin "github.com/golang/protobuf/protoc-gen-go/plugin"
 
-	"github.com/dsymonds/gotoc/gendesc"
-	"github.com/dsymonds/gotoc/parser"
+	"github.com/micnncim/gotoc/gendesc"
+	"github.com/micnncim/gotoc/parser"
 )
 
 var (

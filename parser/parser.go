@@ -13,7 +13,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/dsymonds/gotoc/ast"
+	"github.com/micnncim/gotoc/ast"
 )
 
 const debugging = false
@@ -94,6 +94,7 @@ type parseError struct {
 	message  string
 	filename string
 	line     int // 1-based line number
+	column   int // 1-based column number
 	offset   int // 0-based byte offset from start of input
 }
 
@@ -110,33 +111,34 @@ func (pe *parseError) Error() string {
 var eof = &parseError{message: "EOF"}
 
 type token struct {
-	value        string
-	err          *parseError
-	line, offset int
-	unquoted     string // unquoted version of value
+	value                string
+	err                  *parseError
+	line, column, offset int
+	unquoted             string // unquoted version of value
 }
 
 func (t *token) astPosition() ast.Position {
 	return ast.Position{
 		Line:   t.line,
+		Column: t.column,
 		Offset: t.offset,
 	}
 }
 
 type parser struct {
-	filename     string
-	s            string // remaining input
-	done         bool
-	backed       bool // whether back() was called
-	offset, line int
-	cur          token
+	filename             string
+	s                    string // remaining input
+	done                 bool
+	backed               bool // whether back() was called
+	offset, column, line int
+	cur                  token
 
 	comments []comment // accumulated during parse
 }
 
 type comment struct {
-	text         string
-	line, offset int
+	text                 string
+	line, column, offset int
 }
 
 func newParser(filename, s string) *parser {
@@ -144,7 +146,11 @@ func newParser(filename, s string) *parser {
 		filename: filename,
 		s:        s,
 		line:     1,
-		cur:      token{line: 1},
+		column:   1,
+		cur: token{
+			line:   1,
+			column: 1,
+		},
 	}
 }
 
@@ -152,9 +158,11 @@ func (p *parser) readFile(f *ast.File) *parseError {
 	// Parse top-level things.
 	for !p.done {
 		tok := p.next()
-		if tok.err == eof {
+		switch tok.err {
+		case nil:
+		case eof:
 			break
-		} else if tok.err != nil {
+		default:
 			return tok.err
 		}
 		// TODO: enforce ordering? package, imports, remainder
@@ -195,7 +203,7 @@ func (p *parser) readFile(f *ast.File) *parseError {
 				return tok.err
 			}
 			key := tok.value
-			if err := p.readToken("="); err != nil {
+			if err := p.assertToken("="); err != nil {
 				return err
 			}
 			tok = p.next()
@@ -203,7 +211,7 @@ func (p *parser) readFile(f *ast.File) *parseError {
 				return tok.err
 			}
 			value := tok.value
-			if err := p.readToken(";"); err != nil {
+			if err := p.assertToken(";"); err != nil {
 				return err
 			}
 			f.Options = append(f.Options, [2]string{key, value})
@@ -211,7 +219,7 @@ func (p *parser) readFile(f *ast.File) *parseError {
 			if f.Syntax != "" {
 				return p.errorf("duplicate syntax statement")
 			}
-			if err := p.readToken("="); err != nil {
+			if err := p.assertToken("="); err != nil {
 				return err
 			}
 			tok, err := p.readString()
@@ -224,11 +232,11 @@ func (p *parser) readFile(f *ast.File) *parseError {
 			default:
 				return p.errorf("invalid syntax value %q", s)
 			}
-			if err := p.readToken(";"); err != nil {
+			if err := p.assertToken(";"); err != nil {
 				return err
 			}
 		case "import":
-			if err := p.readToken("public"); err == nil {
+			if err := p.assertToken("public"); err == nil {
 				f.PublicImports = append(f.PublicImports, len(f.Imports))
 			} else {
 				p.back()
@@ -238,7 +246,7 @@ func (p *parser) readFile(f *ast.File) *parseError {
 				return err
 			}
 			f.Imports = append(f.Imports, tok.unquoted)
-			if err := p.readToken(";"); err != nil {
+			if err := p.assertToken(";"); err != nil {
 				return err
 			}
 		case "message":
@@ -289,10 +297,12 @@ func (p *parser) readFile(f *ast.File) *parseError {
 		c := &ast.Comment{
 			Start: ast.Position{
 				Line:   p.comments[0].line,
+				Column: p.comments[0].column,
 				Offset: p.comments[0].offset,
 			},
 			End: ast.Position{
 				Line:   p.comments[n-1].line,
+				Column: p.comments[n-1].column,
 				Offset: p.comments[n-1].offset,
 			},
 		}
@@ -335,7 +345,7 @@ func (p *parser) readFile(f *ast.File) *parseError {
 }
 
 func (p *parser) readMessage(msg *ast.Message) *parseError {
-	if err := p.readToken("message"); err != nil {
+	if err := p.assertToken("message"); err != nil {
 		return err
 	}
 	msg.Position = p.cur.astPosition()
@@ -346,7 +356,7 @@ func (p *parser) readMessage(msg *ast.Message) *parseError {
 	}
 	msg.Name = tok.value // TODO: validate
 
-	if err := p.readToken("{"); err != nil {
+	if err := p.assertToken("{"); err != nil {
 		return err
 	}
 
@@ -354,7 +364,7 @@ func (p *parser) readMessage(msg *ast.Message) *parseError {
 		return err
 	}
 
-	return p.readToken("}")
+	return p.assertToken("}")
 }
 
 func (p *parser) readMessageContents(msg *ast.Message) *parseError {
@@ -391,7 +401,7 @@ func (p *parser) readMessageContents(msg *ast.Message) *parseError {
 			oneof.Name = tok.value // TODO: validate
 			oneof.Up = msg
 
-			if err := p.readToken("{"); err != nil {
+			if err := p.assertToken("{"); err != nil {
 				return err
 			}
 		case "message":
@@ -465,7 +475,7 @@ func (p *parser) readField(f *ast.Field) *parseError {
 		f.Repeated = true
 	case "map":
 		// map < Key , Value >
-		if err := p.readToken("<"); err != nil {
+		if err := p.assertToken("<"); err != nil {
 			return err
 		}
 		tok = p.next()
@@ -473,7 +483,7 @@ func (p *parser) readField(f *ast.Field) *parseError {
 			return tok.err
 		}
 		f.KeyTypeName = tok.value // checked during resolution
-		if err := p.readToken(","); err != nil {
+		if err := p.assertToken(","); err != nil {
 			return err
 		}
 		tok = p.next()
@@ -481,7 +491,7 @@ func (p *parser) readField(f *ast.Field) *parseError {
 			return tok.err
 		}
 		f.TypeName = tok.value // checked during resolution
-		if err := p.readToken(">"); err != nil {
+		if err := p.assertToken(">"); err != nil {
 			return err
 		}
 		f.Repeated = true // maps are repeated
@@ -504,7 +514,7 @@ parseFromFieldName:
 	}
 	f.Name = tok.value // TODO: validate
 
-	if err := p.readToken("="); err != nil {
+	if err := p.assertToken("="); err != nil {
 		return err
 	}
 
@@ -515,7 +525,7 @@ parseFromFieldName:
 	f.Tag = tag
 
 	if f.TypeName == "group" && inMsg {
-		if err := p.readToken("{"); err != nil {
+		if err := p.assertToken("{"); err != nil {
 			return err
 		}
 
@@ -532,17 +542,17 @@ parseFromFieldName:
 		f.TypeName = f.Name
 		msg := f.Up.(*ast.Message)
 		msg.Messages = append(msg.Messages, group) // ugh
-		if err := p.readToken("}"); err != nil {
+		if err := p.assertToken("}"); err != nil {
 			return err
 		}
 		// A semicolon after a group is optional.
-		if err := p.readToken(";"); err != nil {
+		if err := p.assertToken(";"); err != nil {
 			p.back()
 		}
 		return nil
 	}
 
-	if err := p.readToken("["); err == nil {
+	if err := p.assertToken("["); err == nil {
 		p.back()
 		if err := p.readFieldOptions(f); err != nil {
 			return err
@@ -551,14 +561,14 @@ parseFromFieldName:
 		p.back()
 	}
 
-	if err := p.readToken(";"); err != nil {
+	if err := p.assertToken(";"); err != nil {
 		return err
 	}
 	return nil
 }
 
 func (p *parser) readFieldOptions(f *ast.Field) *parseError {
-	if err := p.readToken("["); err != nil {
+	if err := p.assertToken("["); err != nil {
 		return err
 	}
 	for !p.done {
@@ -570,7 +580,7 @@ func (p *parser) readFieldOptions(f *ast.Field) *parseError {
 		switch tok.value {
 		case "default":
 			f.HasDefault = true
-			if err := p.readToken("="); err != nil {
+			if err := p.assertToken("="); err != nil {
 				return err
 			}
 			tok := p.next()
@@ -586,7 +596,7 @@ func (p *parser) readFieldOptions(f *ast.Field) *parseError {
 			}
 		case "packed":
 			f.HasPacked = true
-			if err := p.readToken("="); err != nil {
+			if err := p.assertToken("="); err != nil {
 				return err
 			}
 			packed, err := p.readBool()
@@ -614,7 +624,7 @@ func (p *parser) readFieldOptions(f *ast.Field) *parseError {
 }
 
 func (p *parser) readExtensionRange() ([][2]int, *parseError) {
-	if err := p.readToken("extensions"); err != nil {
+	if err := p.assertToken("extensions"); err != nil {
 		return nil, err
 	}
 
@@ -677,7 +687,7 @@ func (p *parser) readTagNumber(allowMax bool) (int, *parseError) {
 }
 
 func (p *parser) readEnum(enum *ast.Enum) *parseError {
-	if err := p.readToken("enum"); err != nil {
+	if err := p.assertToken("enum"); err != nil {
 		return err
 	}
 	enum.Position = p.cur.astPosition()
@@ -688,7 +698,7 @@ func (p *parser) readEnum(enum *ast.Enum) *parseError {
 	}
 	enum.Name = tok.value // TODO: validate
 
-	if err := p.readToken("{"); err != nil {
+	if err := p.assertToken("{"); err != nil {
 		return err
 	}
 
@@ -701,7 +711,7 @@ func (p *parser) readEnum(enum *ast.Enum) *parseError {
 		if tok.value == "}" {
 			// end of enum
 			// A semicolon after an enum is optional.
-			if err := p.readToken(";"); err != nil {
+			if err := p.assertToken(";"); err != nil {
 				p.back()
 			}
 			return nil
@@ -713,7 +723,7 @@ func (p *parser) readEnum(enum *ast.Enum) *parseError {
 		ev.Name = tok.value // TODO: validate
 		ev.Up = enum
 
-		if err := p.readToken("="); err != nil {
+		if err := p.assertToken("="); err != nil {
 			return err
 		}
 
@@ -728,7 +738,7 @@ func (p *parser) readEnum(enum *ast.Enum) *parseError {
 		}
 		ev.Number = int32(num) // TODO: validate
 
-		if err := p.readToken(";"); err != nil {
+		if err := p.assertToken(";"); err != nil {
 			return err
 		}
 	}
@@ -737,7 +747,7 @@ func (p *parser) readEnum(enum *ast.Enum) *parseError {
 }
 
 func (p *parser) readService(srv *ast.Service) *parseError {
-	if err := p.readToken("service"); err != nil {
+	if err := p.assertToken("service"); err != nil {
 		return err
 	}
 	srv.Position = p.cur.astPosition()
@@ -748,7 +758,7 @@ func (p *parser) readService(srv *ast.Service) *parseError {
 	}
 	srv.Name = tok.value // TODO: validate
 
-	if err := p.readToken("{"); err != nil {
+	if err := p.assertToken("{"); err != nil {
 		return err
 	}
 
@@ -778,7 +788,7 @@ func (p *parser) readService(srv *ast.Service) *parseError {
 		mth.Name = tok.value // TODO: validate
 		mth.Up = srv
 
-		if err := p.readToken("("); err != nil {
+		if err := p.assertToken("("); err != nil {
 			return err
 		}
 
@@ -800,13 +810,13 @@ func (p *parser) readService(srv *ast.Service) *parseError {
 				p.back()
 			}
 		}
-		if err := p.readToken(")"); err != nil {
+		if err := p.assertToken(")"); err != nil {
 			return err
 		}
-		if err := p.readToken("returns"); err != nil {
+		if err := p.assertToken("returns"); err != nil {
 			return err
 		}
-		if err := p.readToken("("); err != nil {
+		if err := p.assertToken("("); err != nil {
 			return err
 		}
 		tok = p.next()
@@ -828,10 +838,10 @@ func (p *parser) readService(srv *ast.Service) *parseError {
 				p.back()
 			}
 		}
-		if err := p.readToken(")"); err != nil {
+		if err := p.assertToken(")"); err != nil {
 			return err
 		}
-		if err := p.readToken(";"); err != nil {
+		if err := p.assertToken(";"); err != nil {
 			return err
 		}
 	}
@@ -840,7 +850,7 @@ func (p *parser) readService(srv *ast.Service) *parseError {
 }
 
 func (p *parser) readExtension(ext *ast.Extension) *parseError {
-	if err := p.readToken("extend"); err != nil {
+	if err := p.assertToken("extend"); err != nil {
 		return err
 	}
 	ext.Position = p.cur.astPosition()
@@ -851,7 +861,7 @@ func (p *parser) readExtension(ext *ast.Extension) *parseError {
 	}
 	ext.Extendee = tok.value // checked during resolution
 
-	if err := p.readToken("{"); err != nil {
+	if err := p.assertToken("{"); err != nil {
 		return err
 	}
 
@@ -902,7 +912,7 @@ func (p *parser) readBool() (bool, *parseError) {
 	}
 }
 
-func (p *parser) readToken(want string) *parseError {
+func (p *parser) assertToken(want string) *parseError {
 	tok := p.next()
 	if tok.err != nil {
 		return tok.err
@@ -915,7 +925,7 @@ func (p *parser) readToken(want string) *parseError {
 
 // Back off the parser by one token; may only be done between calls to p.next().
 func (p *parser) back() {
-	debugf("parser·back(): backed %q [err: %v]", p.cur.value, p.cur.err)
+	debugf("parser.back(): backed %q [err: %v]", p.cur.value, p.cur.err)
 	p.done = false // in case this was the last token
 	p.backed = true
 	// In case an error was being recovered, ignore any error.
@@ -932,13 +942,13 @@ func (p *parser) next() *token {
 		p.backed = false
 	} else {
 		p.advance()
-		debugf("parser·next(): advanced to %q [err: %v]", p.cur.value, p.cur.err)
+		debugf("parser.next(): advanced to %q [err: %v]", p.cur.value, p.cur.err)
 		if p.done && p.cur.err == nil {
 			p.cur.value = ""
 			p.cur.err = eof
 		}
 	}
-	debugf("parser·next(): returning %q [err: %v]", p.cur.value, p.cur.err)
+	debugf("parser.next(): returning %q [err: %v]", p.cur.value, p.cur.err)
 	return &p.cur
 }
 
@@ -951,7 +961,7 @@ func (p *parser) advance() {
 
 	// Start of non-whitespace
 	p.cur.err = nil
-	p.cur.offset, p.cur.line = p.offset, p.line
+	p.cur.offset, p.cur.line, p.cur.column = p.offset, p.line, p.column
 	switch p.s[0] {
 	// TODO: more cases, like punctuation.
 	case ';', '{', '}', '=', '[', ']', ',', '<', '>', '(', ')':
@@ -1000,13 +1010,14 @@ func (p *parser) skipWhitespaceAndComments() {
 		if isWhitespace(p.s[i]) {
 			if p.s[i] == '\n' {
 				p.line++
+				p.column = 0
 			}
 			i++
 			continue
 		}
 		if i+1 < len(p.s) && p.s[i] == '/' && p.s[i+1] == '/' {
 			si := i + 2
-			c := comment{line: p.line, offset: p.offset + i}
+			c := comment{line: p.line, column: p.column, offset: p.offset + i}
 			// XXX: set c.text
 			// comment; skip to end of line or input
 			for i < len(p.s) && p.s[i] != '\n' {
@@ -1017,6 +1028,7 @@ func (p *parser) skipWhitespaceAndComments() {
 			if i < len(p.s) {
 				// end of line; keep going
 				p.line++
+				p.column = 0
 				i++
 				continue
 			}
@@ -1025,6 +1037,7 @@ func (p *parser) skipWhitespaceAndComments() {
 		break
 	}
 	p.offset += i
+	p.column += i
 	p.s = p.s[i:]
 	if len(p.s) == 0 {
 		p.done = true
@@ -1036,6 +1049,7 @@ func (p *parser) errorf(format string, a ...interface{}) *parseError {
 		message:  fmt.Sprintf(format, a...),
 		filename: p.filename,
 		line:     p.cur.line,
+		column:   p.cur.column,
 		offset:   p.cur.offset,
 	}
 	p.cur.err = pe

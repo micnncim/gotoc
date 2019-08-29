@@ -338,14 +338,15 @@ func InlineComment(n Node) *Comment {
 // It is only valid if the line number is positive.
 type Position struct {
 	Line   int // 1-based line number
+	Column int // 1-based column number
 	Offset int // 0-based byte offset
 }
 
-func (pos Position) IsValid() bool              { return pos.Line > 0 }
-func (pos Position) Before(other Position) bool { return pos.Offset < other.Offset }
-func (pos Position) String() string {
-	if pos.Line == 0 {
+func (p Position) IsValid() bool              { return p.Line > 0 && p.Column > 0}
+func (p Position) Before(other Position) bool { return p.Offset < other.Offset }
+func (p Position) String() string {
+	if p.Line == 0 {
 		return ":<invalid>"
 	}
-	return fmt.Sprintf(":%d", pos.Line)
+	return fmt.Sprintf(":%d", p.Line)
 }

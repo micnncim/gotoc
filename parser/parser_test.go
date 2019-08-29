@@ -3,10 +3,11 @@ package parser
 import (
 	"testing"
 
-	"github.com/dsymonds/gotoc/ast"
-	"github.com/dsymonds/gotoc/gendesc"
 	"github.com/golang/protobuf/proto"
 	pb "github.com/golang/protobuf/protoc-gen-go/descriptor"
+
+	"github.com/micnncim/gotoc/ast"
+	"github.com/micnncim/gotoc/gendesc"
 )
 
 // tryParse attempts to parse the input, and verifies that it matches
